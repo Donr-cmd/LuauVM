@@ -552,6 +552,146 @@ local function interrupt(cpu: CPU, n: number)
     cpu.CS = RM(cpu, vec + 2, 1)
 end
 
+local GROUP3: {[number]: (cpu: CPU, v: number, w: number, mod: number, rm: number, addr: number) -> ()} = {
+    [0] = function(cpu, v, w, mod, rm, addr) -- TEST r/m, imm
+        flagsLogic(cpu, bit32.band(v, imm(cpu, w)), w)
+    end,
+    [2] = function(cpu, v, w, mod, rm, addr) -- NOT
+        local mask = if w == 0 then 0xFF else 0xFFFF
+        local result = bit32.band(bit32.bnot(v), mask)
+        if mod == 3 then WR(cpu, rm, w, result) else WM(cpu, addr, w, result) end
+    end,
+    [3] = function(cpu, v, w, mod, rm, addr) -- NEG
+        local result = flagsSub(cpu, 0, v, w)
+        setFlag(cpu, FLAGS.CF, v ~= 0)
+        if mod == 3 then WR(cpu, rm, w, result) else WM(cpu, addr, w, result) end
+    end,
+    [4] = function(cpu, v, w, mod, rm, addr) -- MUL
+        if w == 0 then
+            local result = RR(cpu, 0, 0) * v
+            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
+            local upper = bit32.rshift(result, 8)
+            setFlag(cpu, FLAGS.CF, upper ~= 0)
+            setFlag(cpu, FLAGS.OF, upper ~= 0)
+        else
+            local result = RR(cpu, 0, 1) * v
+            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
+            WR(cpu, 2, 1, bit32.band(bit32.rshift(result, 16), 0xFFFF))
+            local upper = RR(cpu, 2, 1)
+            setFlag(cpu, FLAGS.CF, upper ~= 0)
+            setFlag(cpu, FLAGS.OF, upper ~= 0)
+        end
+    end,
+    [5] = function(cpu, v, w, mod, rm, addr) -- IMUL
+        if w == 0 then
+            local sv = if v >= 0x80 then v - 256 else v
+            local raw = buffer.readi8(cpu.Registers, REG8_OFFSET[0]) * sv
+            WR(cpu, 0, 1, bit32.band(raw, 0xFFFF))
+            local upper = bit32.arshift(bit32.lshift(bit32.band(raw, 0xFFFF), 16), 24)
+            local al_sx = bit32.arshift(bit32.lshift(bit32.band(raw, 0xFF), 24), 24)
+            setFlag(cpu, FLAGS.CF, upper ~= al_sx)
+            setFlag(cpu, FLAGS.OF, upper ~= al_sx)
+        else
+            local sv = if v >= 0x8000 then v - 65536 else v
+            local ax = buffer.readi16(cpu.Registers, REG16_OFFSET[0])
+            local result = ax * sv
+            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
+            WR(cpu, 2, 1, bit32.band(bit32.rshift(bit32.band(result, 0xFFFFFFFF), 16), 0xFFFF))
+            local dx = buffer.readi16(cpu.Registers, REG16_OFFSET[2])
+            local ax_sx = bit32.arshift(bit32.lshift(bit32.band(result, 0xFFFF), 16), 16)
+            setFlag(cpu, FLAGS.CF, dx ~= (if ax_sx < 0 then -1 else 0))
+            setFlag(cpu, FLAGS.OF, dx ~= (if ax_sx < 0 then -1 else 0))
+        end
+    end,
+    [6] = function(cpu, v, w, mod, rm, addr) -- DIV
+        if v == 0 then interrupt(cpu, 0); return end
+        if w == 0 then
+            local ax = RR(cpu, 0, 1)
+            local q, r = ax // v, ax % v
+            if q > 0xFF then interrupt(cpu, 0); return end
+            WR(cpu, 0, 0, q)
+            WR(cpu, 4, 0, r)
+        else
+            local dxax = RR(cpu, 2, 1) * 0x10000 + RR(cpu, 0, 1)
+            local q, r = dxax // v, dxax % v
+            if q > 0xFFFF then interrupt(cpu, 0); return end
+            WR(cpu, 0, 1, q)
+            WR(cpu, 2, 1, r)
+        end
+    end,
+    [7] = function(cpu, v, w, mod, rm, addr) -- IDIV
+        local sv = if w == 0
+            then (if v >= 0x80 then v - 256 else v)
+            else (if v >= 0x8000 then v - 65536 else v)
+        if sv == 0 then interrupt(cpu, 0); return end
+        if w == 0 then
+            local ax = buffer.readi16(cpu.Registers, REG16_OFFSET[0])
+            local q, r = ax // sv, ax % sv
+            if q < -128 or q > 127 then interrupt(cpu, 0); return end
+            WR(cpu, 0, 0, bit32.band(q, 0xFF))
+            WR(cpu, 4, 0, bit32.band(r, 0xFF))
+        else
+            local dxax = buffer.readi16(cpu.Registers, REG16_OFFSET[2]) * 0x10000
+                       + buffer.readu16(cpu.Registers, REG16_OFFSET[0])
+            local q, r = dxax // sv, dxax % sv
+            if q < -32768 or q > 32767 then interrupt(cpu, 0); return end
+            WR(cpu, 0, 1, bit32.band(q, 0xFFFF))
+            WR(cpu, 2, 1, bit32.band(r, 0xFFFF))
+        end
+    end,
+}
+
+local function group3(cpu: CPU, w: number): ()
+    local mod, reg, rm = ModRM(cpu)
+    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
+    local v = if mod == 3 then RR(cpu, rm, w) else RM(cpu, addr, w)
+    local op = GROUP3[if reg == 1 then 0 else reg]
+    if op ~= nil then op(cpu, v, w, mod, rm, addr) end
+end
+
+local GROUP5: {[number]: (cpu: CPU, v: number, mod: number, rm: number, addr: number) -> ()} = {
+    [0] = function(cpu, v, mod, rm, addr) -- INC r/m16
+        setFlag(cpu, FLAGS.OF, v == 0x7FFF)
+        local result = flagsIncDec(cpu, v + 1, 1)
+        setFlag(cpu, FLAGS.AF, bit32.band(v, 0x0F) == 0x0F)
+        if mod == 3 then WR(cpu, rm, 1, result) else WM(cpu, addr, 1, result) end
+    end,
+    [1] = function(cpu, v, mod, rm, addr) -- DEC r/m16
+        setFlag(cpu, FLAGS.OF, v == 0x8000)
+        local result = flagsIncDec(cpu, v - 1, 1)
+        setFlag(cpu, FLAGS.AF, bit32.band(v, 0x0F) == 0x00)
+        if mod == 3 then WR(cpu, rm, 1, result) else WM(cpu, addr, 1, result) end
+    end,
+    [2] = function(cpu, v, mod, rm, addr) -- CALL near r/m16
+        push(cpu, cpu.IP)
+        cpu.IP = v
+    end,
+    [3] = function(cpu, v, mod, rm, addr) -- CALL far m16:16
+        push(cpu, cpu.CS)
+        push(cpu, cpu.IP)
+        cpu.CS = RM(cpu, addr + 2, 1)
+        cpu.IP = RM(cpu, addr, 1)
+    end,
+    [4] = function(cpu, v, mod, rm, addr) -- JMP near r/m16
+        cpu.IP = v
+    end,
+    [5] = function(cpu, v, mod, rm, addr) -- JMP far m16:16
+        cpu.CS = RM(cpu, addr + 2, 1)
+        cpu.IP = RM(cpu, addr, 1)
+    end,
+    [6] = function(cpu, v, mod, rm, addr) -- PUSH r/m16
+        push(cpu, v)
+    end,
+}
+
+local function group5(cpu: CPU): ()
+    local mod, reg, rm = ModRM(cpu)
+    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
+    local v = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, addr, 1)
+    local op = GROUP5[reg]
+    if op ~= nil then op(cpu, v, mod, rm, addr) end
+end
+
 local OPCODES = {}
 setmetatable(OPCODES, {
     __index = function(_, op)
@@ -1133,105 +1273,6 @@ OPCODES[0xF5] = function(cpu) -- CMC
     cpu.FLAGS = bit32.bxor(cpu.FLAGS, 1)
 end
 
-type Group3Op = (cpu: CPU, v: number, w: number, mod: number, rm: number, addr: number) -> ()
-
-local GROUP3: {[number]: Group3Op} = {
-    [0] = function(cpu, v, w, mod, rm, addr) -- TEST r/m, imm
-        flagsLogic(cpu, bit32.band(v, imm(cpu, w)), w)
-    end,
-    [2] = function(cpu, v, w, mod, rm, addr) -- NOT
-        local mask = if w == 0 then 0xFF else 0xFFFF
-        local result = bit32.band(bit32.bnot(v), mask)
-        if mod == 3 then WR(cpu, rm, w, result) else WM(cpu, addr, w, result) end
-    end,
-    [3] = function(cpu, v, w, mod, rm, addr) -- NEG
-        local result = flagsSub(cpu, 0, v, w)
-        setFlag(cpu, FLAGS.CF, v ~= 0)
-        if mod == 3 then WR(cpu, rm, w, result) else WM(cpu, addr, w, result) end
-    end,
-    [4] = function(cpu, v, w, mod, rm, addr) -- MUL
-        if w == 0 then
-            local result = RR(cpu, 0, 0) * v
-            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
-            local upper = bit32.rshift(result, 8)
-            setFlag(cpu, FLAGS.CF, upper ~= 0)
-            setFlag(cpu, FLAGS.OF, upper ~= 0)
-        else
-            local result = RR(cpu, 0, 1) * v
-            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
-            WR(cpu, 2, 1, bit32.band(bit32.rshift(result, 16), 0xFFFF))
-            local upper = RR(cpu, 2, 1)
-            setFlag(cpu, FLAGS.CF, upper ~= 0)
-            setFlag(cpu, FLAGS.OF, upper ~= 0)
-        end
-    end,
-    [5] = function(cpu, v, w, mod, rm, addr) -- IMUL
-        if w == 0 then
-            local sv = if v >= 0x80 then v - 256 else v
-            local raw = buffer.readi8(cpu.Registers, REG8_OFFSET[0]) * sv
-            WR(cpu, 0, 1, bit32.band(raw, 0xFFFF))
-            local upper = bit32.arshift(bit32.lshift(bit32.band(raw, 0xFFFF), 16), 24)
-            local al_sx = bit32.arshift(bit32.lshift(bit32.band(raw, 0xFF), 24), 24)
-            setFlag(cpu, FLAGS.CF, upper ~= al_sx)
-            setFlag(cpu, FLAGS.OF, upper ~= al_sx)
-        else
-            local sv = if v >= 0x8000 then v - 65536 else v
-            local ax = buffer.readi16(cpu.Registers, REG16_OFFSET[0])
-            local result = ax * sv
-            WR(cpu, 0, 1, bit32.band(result, 0xFFFF))
-            WR(cpu, 2, 1, bit32.band(bit32.rshift(bit32.band(result, 0xFFFFFFFF), 16), 0xFFFF))
-            local dx = buffer.readi16(cpu.Registers, REG16_OFFSET[2])
-            local ax_sx = bit32.arshift(bit32.lshift(bit32.band(result, 0xFFFF), 16), 16)
-            setFlag(cpu, FLAGS.CF, dx ~= (if ax_sx < 0 then -1 else 0))
-            setFlag(cpu, FLAGS.OF, dx ~= (if ax_sx < 0 then -1 else 0))
-        end
-    end,
-    [6] = function(cpu, v, w, mod, rm, addr) -- DIV
-        if v == 0 then interrupt(cpu, 0); return end
-        if w == 0 then
-            local ax = RR(cpu, 0, 1)
-            local q, r = ax // v, ax % v
-            if q > 0xFF then interrupt(cpu, 0); return end
-            WR(cpu, 0, 0, q)
-            WR(cpu, 4, 0, r)
-        else
-            local dxax = RR(cpu, 2, 1) * 0x10000 + RR(cpu, 0, 1)
-            local q, r = dxax // v, dxax % v
-            if q > 0xFFFF then interrupt(cpu, 0); return end
-            WR(cpu, 0, 1, q)
-            WR(cpu, 2, 1, r)
-        end
-    end,
-    [7] = function(cpu, v, w, mod, rm, addr) -- IDIV
-        local sv = if w == 0
-            then (if v >= 0x80 then v - 256 else v)
-            else (if v >= 0x8000 then v - 65536 else v)
-        if sv == 0 then interrupt(cpu, 0); return end
-        if w == 0 then
-            local ax = buffer.readi16(cpu.Registers, REG16_OFFSET[0])
-            local q, r = ax // sv, ax % sv
-            if q < -128 or q > 127 then interrupt(cpu, 0); return end
-            WR(cpu, 0, 0, bit32.band(q, 0xFF))
-            WR(cpu, 4, 0, bit32.band(r, 0xFF))
-        else
-            local dxax = buffer.readi16(cpu.Registers, REG16_OFFSET[2]) * 0x10000
-                       + buffer.readu16(cpu.Registers, REG16_OFFSET[0])
-            local q, r = dxax // sv, dxax % sv
-            if q < -32768 or q > 32767 then interrupt(cpu, 0); return end
-            WR(cpu, 0, 1, bit32.band(q, 0xFFFF))
-            WR(cpu, 2, 1, bit32.band(r, 0xFFFF))
-        end
-    end,
-}
-
-local function group3(cpu: CPU, w: number): ()
-    local mod, reg, rm = ModRM(cpu)
-    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
-    local v = if mod == 3 then RR(cpu, rm, w) else RM(cpu, addr, w)
-    local op = GROUP3[if reg == 1 then 0 else reg]
-    if op ~= nil then op(cpu, v, w, mod, rm, addr) end
-end
-
 OPCODES[0xF6] = function(cpu) group3(cpu, 0) end -- GROUP3 r/m8
 OPCODES[0xF7] = function(cpu) group3(cpu, 1) end -- GROUP3 r/m16
 
@@ -1255,38 +1296,6 @@ OPCODES[0xFE] = function(cpu) -- GROUP4 r/m8 (INC/DEC only)
     if mod == 3 then WR(cpu, rm, 0, result) else WM(cpu, addr, 0, result) end
 end
 
-OPCODES[0xFF] = function(cpu) -- GROUP5
-    local mod, reg, rm = ModRM(cpu)
-    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
-    local v = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, addr, 1)
-    if reg == 0 then -- INC r/m16
-        setFlag(cpu, FLAGS.OF, v == 0x7FFF)
-        local result = flagsIncDec(cpu, v + 1, 1)
-        setFlag(cpu, FLAGS.AF, bit32.band(v, 0x0F) == 0x0F)
-        if mod == 3 then WR(cpu, rm, 1, result) else WM(cpu, addr, 1, result) end
-    elseif reg == 1 then -- DEC r/m16
-        setFlag(cpu, FLAGS.OF, v == 0x8000)
-        local result = flagsIncDec(cpu, v - 1, 1)
-        setFlag(cpu, FLAGS.AF, bit32.band(v, 0x0F) == 0x00)
-        if mod == 3 then WR(cpu, rm, 1, result) else WM(cpu, addr, 1, result) end
-    elseif reg == 2 then -- CALL near r/m16
-        push(cpu, cpu.IP)
-        cpu.IP = v
-    elseif reg == 3 then -- CALL far m16:16
-        local far_ip = RM(cpu, addr, 1)
-        local far_cs = RM(cpu, addr + 2, 1)
-        push(cpu, cpu.CS)
-        push(cpu, cpu.IP)
-        cpu.CS = far_cs
-        cpu.IP = far_ip
-    elseif reg == 4 then -- JMP near r/m16
-        cpu.IP = v
-    elseif reg == 5 then -- JMP far m16:16
-        cpu.IP = RM(cpu, addr, 1)
-        cpu.CS = RM(cpu, addr + 2, 1)
-    elseif reg == 6 then -- PUSH r/m16
-        push(cpu, v)
-    end
-end
+OPCODES[0xFF] = function(cpu) group5(cpu) end -- GROUP5
 
 return OPCODES
