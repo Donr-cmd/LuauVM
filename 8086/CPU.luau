@@ -16,6 +16,9 @@ function CPU.new(RAM)
     self.CS = 0xFFFF
     self.SS = 0
     self.DS = 0
+    self.SI = 0
+    self.DI = 0
+    self.BP = 0
 
     self.SegmentOverride = nil
     self.REPNE = false
@@ -83,7 +86,7 @@ function CPU:Step()
     self.REPNE = false
     self.REP = false
     while true do
-        local addr = self.CS * 16 + self.IP
+        local addr = bit32.band(self.CS * 16 + self.IP, 0xFFFFF)
         local byte = buffer.readu8(self.RAM, addr)
         self.IP = bit32.band(self.IP + 1, 0xFFFF)
         local prefix = PREFIXES[byte]

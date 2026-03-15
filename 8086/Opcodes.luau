@@ -4,7 +4,7 @@ local Types = require("./Types")
 type CPU = Types.CPU
 
 local REG8_OFFSET = {[0]=0, 2, 4, 6, 1, 3, 5, 7}
-local REG16_OFFSET = {[0]=0, 2, 4, 6, 8, 10, 12, 14}
+local REG16_OFFSET = {[0]=0, 2, 4, 6, 8, 10, 12, 14, [8]=8}
 local SREG = {"ES", "CS", "SS", "DS"}
 
 local function RR(cpu: CPU, reg, w): number
@@ -718,6 +718,11 @@ OPCODES[0x0D] = function(cpu) WR(cpu, 0, 1, flagsLogic(cpu, bit32.bor(RR(cpu, 0,
 OPCODES[0x0E] = function(cpu) push(cpu, cpu.CS) end -- PUSH CS
 
 local OPCODES_0F = {}
+setmetatable(OPCODES_0F, {
+    __index = function(_, op)
+        return function(cpu) end
+    end
+})
 
 OPCODES[0x0F] = function(cpu) -- Two-byte escape
     local opcode = imm(cpu, 0)
