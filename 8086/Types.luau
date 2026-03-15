@@ -1,0 +1,25 @@
+export type CPU = {
+    RAM: buffer,
+    Registers: buffer,
+    IP: number,
+    CS: number,
+    DS: number,
+    SS: number,
+    ES: number,
+    SI: number,
+    DI: number,
+    FLAGS: number,
+    SegmentOverride: number?,
+    REP: boolean,
+    REPNE: boolean,
+    Halted: boolean,
+    PendingIRQ: number?,
+    PendingNMI: boolean,
+    PortIn:  {[number]: (port: number) -> number},
+    PortOut: {[number]: (port: number, value: number) -> ()},
+    Step:       (self: CPU) -> (),
+    RaiseIRQ:   (self: CPU, n: number) -> (),
+    TriggerNMI: (self: CPU) -> (),
+}
+
+return {}
