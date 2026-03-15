@@ -1146,7 +1146,7 @@ OPCODES[0xF6] = function(cpu) -- GROUP3 r/m8
             WM(cpu, addr, 0, bit32.band(bit32.bnot(RM(cpu, addr, 0)), 0xFF))
         end
     elseif reg == 3 then -- NEG r/m8
-        local addr = if mod == 3 then nil else M(cpu, mod, rm)
+        local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
         local v = if mod == 3 then RR(cpu, rm, 0) else RM(cpu, addr, 0)
         local result = flagsSub(cpu, 0, v, 0)
         setFlag(cpu, FLAGS.CF, v ~= 0)
@@ -1169,21 +1169,21 @@ OPCODES[0xF6] = function(cpu) -- GROUP3 r/m8
         setFlag(cpu, FLAGS.OF, upper ~= al_signex)
     elseif reg == 6 then -- DIV AX / r/m8
         local v = if mod == 3 then RR(cpu, rm, 0) else RM(cpu, M(cpu, mod, rm), 0)
-        if v == 0 then interrupt(cpu, 0) return end
+        if v == 0 then interrupt(cpu, 0); return end
         local ax = RR(cpu, 0, 1)
         local q = ax // v
         local r = ax % v
-        if q > 0xFF then interrupt(cpu, 0) return end
+        if q > 0xFF then interrupt(cpu, 0); return end
         WR(cpu, 0, 0, q)
         WR(cpu, 4, 0, r)
     elseif reg == 7 then -- IDIV AX / r/m8
         local vraw = if mod == 3 then RR(cpu, rm, 0) else RM(cpu, M(cpu, mod, rm), 0)
         local v = vraw >= 0x80 and (vraw - 256) or vraw
-        if v == 0 then interrupt(cpu, 0) return end
+        if v == 0 then interrupt(cpu, 0); return end
         local ax = buffer.readi16(cpu.Registers, REG16_OFFSET[0])
         local q = ax // v
         local r = ax % v
-        if q < -128 or q > 127 then interrupt(cpu, 0) return end
+        if q < -128 or q > 127 then interrupt(cpu, 0); return end
         WR(cpu, 0, 0, bit32.band(q, 0xFF))
         WR(cpu, 4, 0, bit32.band(r, 0xFF))
     end
@@ -1202,7 +1202,7 @@ OPCODES[0xF7] = function(cpu) -- GROUP3 r/m16
             WM(cpu, addr, 1, bit32.band(bit32.bnot(RM(cpu, addr, 1)), 0xFFFF))
         end
     elseif reg == 3 then -- NEG r/m16
-        local addr = if mod == 3 then nil else M(cpu, mod, rm)
+        local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
         local v = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, addr, 1)
         local result = flagsSub(cpu, 0, v, 1)
         setFlag(cpu, FLAGS.CF, v ~= 0)
@@ -1228,23 +1228,23 @@ OPCODES[0xF7] = function(cpu) -- GROUP3 r/m16
         setFlag(cpu, FLAGS.OF, dx ~= (ax_signex < 0 and -1 or 0))
     elseif reg == 6 then -- DIV DX:AX / r/m16
         local v = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, M(cpu, mod, rm), 1)
-        if v == 0 then interrupt(cpu, 0) return end
+        if v == 0 then interrupt(cpu, 0); return end
         local dxax = RR(cpu, 2, 1) * 0x10000 + RR(cpu, 0, 1)
         local q = dxax // v
         local r = dxax % v
-        if q > 0xFFFF then interrupt(cpu, 0) return end
+        if q > 0xFFFF then interrupt(cpu, 0); return end
         WR(cpu, 0, 1, q)
         WR(cpu, 2, 1, r)
     elseif reg == 7 then -- IDIV DX:AX / r/m16
         local vraw = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, M(cpu, mod, rm), 1)
         local v = vraw >= 0x8000 and (vraw - 65536) or vraw
-        if v == 0 then interrupt(cpu, 0) return end
+        if v == 0 then interrupt(cpu, 0); return end
         local dx = buffer.readi16(cpu.Registers, REG16_OFFSET[2])
         local ax = buffer.readu16(cpu.Registers, REG16_OFFSET[0])
         local dxax = dx * 0x10000 + ax
         local q = dxax // v
         local r = dxax % v
-        if q < -32768 or q > 32767 then interrupt(cpu, 0) return end
+        if q < -32768 or q > 32767 then interrupt(cpu, 0); return end
         WR(cpu, 0, 1, bit32.band(q, 0xFFFF))
         WR(cpu, 2, 1, bit32.band(r, 0xFFFF))
     end
@@ -1259,7 +1259,7 @@ OPCODES[0xFD] = function(cpu) setFlag(cpu, FLAGS.DF, true) end  -- STD
 
 OPCODES[0xFE] = function(cpu) -- GROUP4 r/m8 (INC/DEC only)
     local mod, reg, rm = ModRM(cpu)
-    local addr = if mod == 3 then nil else M(cpu, mod, rm)
+    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
     local v = if mod == 3 then RR(cpu, rm, 0) else RM(cpu, addr, 0)
     local sign = if reg == 0 then 1 else -1
     setFlag(cpu, FLAGS.OF, sign == 1 and v == 0x7F or v == 0x80)
@@ -1272,7 +1272,7 @@ end
 
 OPCODES[0xFF] = function(cpu) -- GROUP5
     local mod, reg, rm = ModRM(cpu)
-    local addr = if mod == 3 then nil else M(cpu, mod, rm)
+    local addr: number = if mod == 3 then 0 else M(cpu, mod, rm)
     local v = if mod == 3 then RR(cpu, rm, 1) else RM(cpu, addr, 1)
     if reg == 0 then -- INC r/m16
         setFlag(cpu, FLAGS.OF, v == 0x7FFF)
